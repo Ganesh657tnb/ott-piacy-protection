@@ -2,7 +2,7 @@ import os
 import wave
 import struct
 import streamlit as st
-from moviepy.editor import VideoFileClip, AudioFileClip
+import ffmpeg
 from pydub import AudioSegment
 import tempfile
 
@@ -36,38 +36,31 @@ def embed_watermark(input_wav, watermark_text, output_wav):
 
     return output_wav
 
-# Function to process video: extract audio as WAV, watermark WAV, convert to MP3 for re-insertion
+# Function to process video: extract audio as WAV, watermark WAV, re-insert
 def process_video_for_download(video_path, user_id):
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Extract audio as WAV (intermediate format)
-        video_clip = VideoFileClip(video_path)
-        audio_clip = video_clip.audio
+        # Extract audio as WAV using ffmpeg-python
         temp_audio_wav = os.path.join(temp_dir, "temp_audio.wav")
-        audio_clip.write_audiofile(temp_audio_wav, codec="pcm_s16le")  # Export as WAV
-        video_clip.close()
-        audio_clip.close()
+        ffmpeg.input(video_path).output(temp_audio_wav, acodec='pcm_s16le', ac=1, ar='44100').run(quiet=True)
 
-        # Watermark the WAV audio directly
+        # Watermark the WAV audio
         watermarked_audio_wav = os.path.join(temp_dir, "watermarked_audio.wav")
         embed_watermark(temp_audio_wav, str(user_id), watermarked_audio_wav)
 
-        # Convert watermarked WAV to MP3 for video compatibility (intermediate step before re-insertion)
+        # Convert watermarked WAV to MP3
         watermarked_audio_mp3 = os.path.join(temp_dir, "watermarked_audio.mp3")
         sound = AudioSegment.from_wav(watermarked_audio_wav)
         sound.export(watermarked_audio_mp3, format="mp3")
 
-        # Re-insert watermarked audio (now MP3) into video
-        video_clip_no_audio = VideoFileClip(video_path).set_audio(None)
-        watermarked_audio_clip = AudioFileClip(watermarked_audio_mp3)
-        final_clip = video_clip_no_audio.set_audio(watermarked_audio_clip)
+        # Re-insert audio into video using ffmpeg-python
         processed_video_path = os.path.join(temp_dir, "processed_video.mp4")
-        final_clip.write_videofile(processed_video_path, codec="libx264", audio_codec="aac")
-        final_clip.close()
-        watermarked_audio_clip.close()
+        video_stream = ffmpeg.input(video_path)
+        audio_stream = ffmpeg.input(watermarked_audio_mp3)
+        ffmpeg.output(video_stream.video, audio_stream.audio, processed_video_path, vcodec='libx264', acodec='aac').run(quiet=True)
 
         return processed_video_path
 
-# Streamlit App
+# Rest of the Streamlit app (unchanged)
 def main():
     st.title("Simple OTT Video App")
 
