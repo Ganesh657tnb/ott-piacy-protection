@@ -1,6 +1,5 @@
 streamlit
-moviepy
 pydub
 numpy
 imageio-ffmpeg
-pillow
+Pillow
