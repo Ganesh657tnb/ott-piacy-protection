@@ -1,5 +1,9 @@
-streamlit
-moviepy
-pydub
-imageio-ffmpeg
-numpy
+streamlit>=1.28.0
+moviepy==1.0.3
+pydub==0.25.1
+numpy>=1.21.0
+imageio>=2.13.0
+decorator>=4.0.0
+tqdm>=4.62.0
+requests>=2.25.0
+Pillow>=8.0.0
