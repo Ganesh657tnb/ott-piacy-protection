@@ -1,5 +1,1 @@
-streamlit
-numpy
-imageio-ffmpeg
-Pillow
-
+streamlit==1.26.0
