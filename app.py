@@ -2,14 +2,17 @@ import os
 import wave
 import struct
 import streamlit as st
-from pydub import AudioSegment
 import tempfile
 import subprocess
+import shutil
 
 # Configuration
 UPLOAD_FOLDER = 'uploads/'
 ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov'}
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# Detect ffmpeg
+FFMPEG_BIN = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
 
 # Watermarking function (unchanged, operates on WAV)
 def embed_watermark(input_wav, watermark_text, output_wav):
@@ -36,19 +39,23 @@ def embed_watermark(input_wav, watermark_text, output_wav):
 
     return output_wav
 
-# Function to extract audio from video using FFmpeg
+# Extract audio from video
 def extract_audio_ffmpeg(video_path, output_wav_path):
     subprocess.run([
-        "ffmpeg", "-y", "-i", video_path,
-        "-vn",  # no video
-        "-acodec", "pcm_s16le",
-        output_wav_path
+        FFMPEG_BIN, "-y", "-i", video_path,
+        "-vn", "-acodec", "pcm_s16le", output_wav_path
     ], check=True)
 
-# Function to re-insert audio into video using FFmpeg
+# Convert WAV to MP3
+def convert_wav_to_mp3(wav_path, mp3_path):
+    subprocess.run([
+        FFMPEG_BIN, "-y", "-i", wav_path, mp3_path
+    ], check=True)
+
+# Re-insert audio into video
 def insert_audio_ffmpeg(video_path, audio_path, output_video_path):
     subprocess.run([
-        "ffmpeg", "-y",
+        FFMPEG_BIN, "-y",
         "-i", video_path,
         "-i", audio_path,
         "-c:v", "copy",
@@ -58,23 +65,18 @@ def insert_audio_ffmpeg(video_path, audio_path, output_video_path):
         output_video_path
     ], check=True)
 
-# Function to process video: extract audio, watermark, re-insert
+# Full processing function
 def process_video_for_download(video_path, user_id):
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Extract audio as WAV
         temp_audio_wav = os.path.join(temp_dir, "temp_audio.wav")
         extract_audio_ffmpeg(video_path, temp_audio_wav)
 
-        # Watermark the WAV audio directly
         watermarked_audio_wav = os.path.join(temp_dir, "watermarked_audio.wav")
         embed_watermark(temp_audio_wav, str(user_id), watermarked_audio_wav)
 
-        # Convert watermarked WAV to MP3 for compatibility
         watermarked_audio_mp3 = os.path.join(temp_dir, "watermarked_audio.mp3")
-        sound = AudioSegment.from_wav(watermarked_audio_wav)
-        sound.export(watermarked_audio_mp3, format="mp3")
+        convert_wav_to_mp3(watermarked_audio_wav, watermarked_audio_mp3)
 
-        # Re-insert watermarked audio into video
         processed_video_path = os.path.join(temp_dir, "processed_video.mp4")
         insert_audio_ffmpeg(video_path, watermarked_audio_mp3, processed_video_path)
 
@@ -84,13 +86,13 @@ def process_video_for_download(video_path, user_id):
 def main():
     st.title("Simple OTT Video App")
 
-    # Initialize session state for users and login
+    # Session state for login
     if 'users' not in st.session_state:
         st.session_state.users = {}
     if 'logged_in_user' not in st.session_state:
         st.session_state.logged_in_user = None
 
-    # Sidebar for login/registration
+    # Sidebar for login/register
     with st.sidebar:
         st.header("Authentication")
         if st.session_state.logged_in_user:
