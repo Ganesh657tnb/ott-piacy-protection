@@ -1,3 +1,6 @@
-streamlit>=1.28.0
-ffmpeg-python
-pydub==0.25.1
+streamlit
+moviepy
+pydub
+numpy
+imageio-ffmpeg
+pillow
