@@ -2,9 +2,9 @@ import os
 import wave
 import struct
 import streamlit as st
-from moviepy.editor import VideoFileClip, AudioFileClip
 from pydub import AudioSegment
 import tempfile
+import subprocess
 
 # Configuration
 UPLOAD_FOLDER = 'uploads/'
@@ -36,34 +36,47 @@ def embed_watermark(input_wav, watermark_text, output_wav):
 
     return output_wav
 
-# Function to process video: extract audio as WAV, watermark WAV, convert to MP3 for re-insertion
+# Function to extract audio from video using FFmpeg
+def extract_audio_ffmpeg(video_path, output_wav_path):
+    subprocess.run([
+        "ffmpeg", "-y", "-i", video_path,
+        "-vn",  # no video
+        "-acodec", "pcm_s16le",
+        output_wav_path
+    ], check=True)
+
+# Function to re-insert audio into video using FFmpeg
+def insert_audio_ffmpeg(video_path, audio_path, output_video_path):
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-i", audio_path,
+        "-c:v", "copy",
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-shortest",
+        output_video_path
+    ], check=True)
+
+# Function to process video: extract audio, watermark, re-insert
 def process_video_for_download(video_path, user_id):
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Extract audio as WAV (intermediate format)
-        video_clip = VideoFileClip(video_path)
-        audio_clip = video_clip.audio
+        # Extract audio as WAV
         temp_audio_wav = os.path.join(temp_dir, "temp_audio.wav")
-        audio_clip.write_audiofile(temp_audio_wav, codec="pcm_s16le")  # Export as WAV
-        video_clip.close()
-        audio_clip.close()
+        extract_audio_ffmpeg(video_path, temp_audio_wav)
 
         # Watermark the WAV audio directly
         watermarked_audio_wav = os.path.join(temp_dir, "watermarked_audio.wav")
         embed_watermark(temp_audio_wav, str(user_id), watermarked_audio_wav)
 
-        # Convert watermarked WAV to MP3 for video compatibility (intermediate step before re-insertion)
+        # Convert watermarked WAV to MP3 for compatibility
         watermarked_audio_mp3 = os.path.join(temp_dir, "watermarked_audio.mp3")
         sound = AudioSegment.from_wav(watermarked_audio_wav)
         sound.export(watermarked_audio_mp3, format="mp3")
 
-        # Re-insert watermarked audio (now MP3) into video
-        video_clip_no_audio = VideoFileClip(video_path).set_audio(None)
-        watermarked_audio_clip = AudioFileClip(watermarked_audio_mp3)
-        final_clip = video_clip_no_audio.set_audio(watermarked_audio_clip)
+        # Re-insert watermarked audio into video
         processed_video_path = os.path.join(temp_dir, "processed_video.mp4")
-        final_clip.write_videofile(processed_video_path, codec="libx264", audio_codec="aac")
-        final_clip.close()
-        watermarked_audio_clip.close()
+        insert_audio_ffmpeg(video_path, watermarked_audio_mp3, processed_video_path)
 
         return processed_video_path
 
@@ -73,7 +86,7 @@ def main():
 
     # Initialize session state for users and login
     if 'users' not in st.session_state:
-        st.session_state.users = {}  # In-memory user storage: {username: {'password': str, 'id': int}}
+        st.session_state.users = {}
     if 'logged_in_user' not in st.session_state:
         st.session_state.logged_in_user = None
 
@@ -95,7 +108,7 @@ def main():
                         st.error("Username already exists")
                     else:
                         user_id = len(st.session_state.users) + 1
-                        st.session_state.users[username] = {'password': password, 'id': user_id}  # Plain text for demo
+                        st.session_state.users[username] = {'password': password, 'id': user_id}
                         st.success("Registered successfully! Please login.")
                 elif auth_mode == "Login":
                     if username in st.session_state.users and st.session_state.users[username]['password'] == password:
@@ -105,7 +118,6 @@ def main():
                     else:
                         st.error("Invalid credentials")
 
-    # Main content (only if logged in)
     if not st.session_state.logged_in_user:
         st.warning("Please log in to access the app.")
         return
