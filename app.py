@@ -4,15 +4,14 @@ import struct
 import streamlit as st
 import tempfile
 import subprocess
-import shutil
 
 # Configuration
 UPLOAD_FOLDER = 'uploads/'
 ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov'}
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Detect ffmpeg
-FFMPEG_BIN = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+# FFmpeg path (Streamlit Cloud)
+FFMPEG_BIN = "/usr/bin/ffmpeg"
 
 # Watermarking function (unchanged, operates on WAV)
 def embed_watermark(input_wav, watermark_text, output_wav):
@@ -65,18 +64,22 @@ def insert_audio_ffmpeg(video_path, audio_path, output_video_path):
         output_video_path
     ], check=True)
 
-# Full processing function
+# Process video: extract audio, watermark, re-insert
 def process_video_for_download(video_path, user_id):
     with tempfile.TemporaryDirectory() as temp_dir:
+        # Step 1: Extract WAV audio
         temp_audio_wav = os.path.join(temp_dir, "temp_audio.wav")
         extract_audio_ffmpeg(video_path, temp_audio_wav)
 
+        # Step 2: Watermark WAV
         watermarked_audio_wav = os.path.join(temp_dir, "watermarked_audio.wav")
         embed_watermark(temp_audio_wav, str(user_id), watermarked_audio_wav)
 
+        # Step 3: Convert to MP3 for video compatibility
         watermarked_audio_mp3 = os.path.join(temp_dir, "watermarked_audio.mp3")
         convert_wav_to_mp3(watermarked_audio_wav, watermarked_audio_mp3)
 
+        # Step 4: Re-insert watermarked audio
         processed_video_path = os.path.join(temp_dir, "processed_video.mp4")
         insert_audio_ffmpeg(video_path, watermarked_audio_mp3, processed_video_path)
 
@@ -86,13 +89,13 @@ def process_video_for_download(video_path, user_id):
 def main():
     st.title("Simple OTT Video App")
 
-    # Session state for login
+    # Session state
     if 'users' not in st.session_state:
         st.session_state.users = {}
     if 'logged_in_user' not in st.session_state:
         st.session_state.logged_in_user = None
 
-    # Sidebar for login/register
+    # Sidebar: Login/Register
     with st.sidebar:
         st.header("Authentication")
         if st.session_state.logged_in_user:
@@ -126,7 +129,7 @@ def main():
 
     user_id = st.session_state.users[st.session_state.logged_in_user]['id']
 
-    # Upload Section
+    # Upload Video
     st.header("Upload Video")
     uploaded_file = st.file_uploader("Choose a video file", type=list(ALLOWED_EXTENSIONS))
     if uploaded_file and st.button("Upload"):
