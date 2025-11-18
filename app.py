@@ -6,48 +6,98 @@ from pydub import AudioSegment
 import tempfile
 import subprocess
 from io import BytesIO
+# 🚨 NEW: Import NumPy for signal processing (DSSS)
+import numpy as np 
 
 # --- Configuration & Setup ---
-# Note: In a deployed environment, relying on the local filesystem (UPLOAD_FOLDER) 
-# is highly discouraged as it's not persistent and shared by all users.
 UPLOAD_FOLDER = 'uploads/'
 ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov'}
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# --- Watermarking Functions (LSB on WAV) ---
+# --- DSSS Utility Functions ---
 
-# Watermarking function (unchanged, operates on WAV)
-def embed_watermark(input_wav, watermark_text, output_wav):
-    """Embeds a watermark (user ID) into the least significant bit of the WAV audio samples."""
+def generate_pn_sequence(chip_rate, duration_samples):
+    """
+    Generates a simple Pseudo-Noise (PN) sequence (Spreading Code).
+    A chip_rate of 1 (every sample) is used for simplicity.
+    In a real system, this sequence is often based on Linear Feedback Shift Registers (LFSRs).
+    """
+    # Use a fixed seed for reproducibility, crucial for extraction
+    np.random.seed(42) 
+    # Generate random +1 or -1 values, based on the total number of samples
+    # We use samples to simplify synchronization and assume chip_rate = sample_rate
+    return (np.random.randint(0, 2, duration_samples) * 2 - 1).astype(np.int16)
+
+# --- Watermarking Functions (DSSS on WAV) ---
+
+# Watermarking function (REPLACED LSB with DSSS)
+def embed_watermark_dsss(input_wav, watermark_text, output_wav):
+    """Embeds a watermark (user ID) using a basic Direct Sequence Spread Spectrum (DSSS) method."""
+    
     with wave.open(input_wav, "rb") as wav:
         params = wav.getparams()
         frames = wav.readframes(params.nframes)
+        sample_width = params.sampwidth
+        nchannels = params.nchannels
+        frame_rate = params.framerate
 
-    samples = list(struct.unpack("<" + "h" * (len(frames) // 2), frames))
-    watermark_bits = ''.join(format(ord(c), '08b') for c in watermark_text)
-    length_bits = format(len(watermark_bits), '016b')
-    final_bits = length_bits + watermark_bits
+    # Unpack frames into a NumPy array of 16-bit integers
+    # 'h' for 16-bit (2 bytes), '<' for little-endian
+    samples = np.frombuffer(frames, dtype=np.int16)
 
-    # Ensure the audio is long enough for the watermark
-    if len(final_bits) > len(samples):
-        raise ValueError("Audio is too short to embed the full watermark.")
+    # 1. Prepare Watermark Data (Binary)
+    # For robust DSSS, we embed a short, repeatable sequence. 
+    # We will embed a fixed 16-bit binary signature + the user ID.
+    signature_bit = 1 # A simple bit to verify the presence of the watermark
+    user_id_bits = np.array([int(b) * 2 - 1 for b in format(int(watermark_text), '08b')]) # Convert 0/1 to -1/+1
+    
+    # Simple Watermark Payload: [Signature Bit (1) + User ID (8 bits)]
+    payload = np.concatenate([[signature_bit * 2 - 1], user_id_bits])
+    
+    # 2. Generate Spreading Code (PN Sequence)
+    # Use the full length of the audio for the spreading code
+    pn_sequence = generate_pn_sequence(frame_rate, len(samples)) 
+    
+    # 3. Spread the Watermark Data
+    # The spreading rate is the ratio of audio length to watermark length (DSSS processing gain)
+    spreading_factor = int(np.floor(len(samples) / len(payload)))
+    
+    if spreading_factor < 100: # Arbitrary minimum required gain
+        raise ValueError("Audio is too short for meaningful DSSS spreading.")
 
-    for i, bit in enumerate(final_bits):
-        samples[i] = (samples[i] & ~1) | int(bit)
+    watermark_signal = np.zeros_like(samples, dtype=np.float64)
 
-    new_frames = struct.pack("<" + "h" * len(samples), *samples)
+    # Multiply each payload bit by a segment of the PN sequence
+    for i, data_bit in enumerate(payload):
+        start_index = i * spreading_factor
+        end_index = (i + 1) * spreading_factor
+        
+        # Multiply the PN sequence segment by the data bit (+1 or -1)
+        segment_length = min(spreading_factor, len(samples) - start_index)
+        watermark_signal[start_index:end_index] = (pn_sequence[start_index:end_index] * data_bit)
+
+    # 4. Scale and Embed
+    # The embedding strength (alpha) controls robustness vs. imperceptibility.
+    # A small factor (e.g., 0.01) keeps the watermark imperceptible.
+    alpha = 0.01 
+    watermarked_samples = samples + (watermark_signal * alpha * np.max(np.abs(samples)))
+    
+    # Clip samples to the 16-bit range to prevent overflow noise
+    watermarked_samples = np.clip(watermarked_samples, -32768, 32767).astype(np.int16)
+    
+    # 5. Pack and Write to WAV
+    new_frames = watermarked_samples.tobytes()
+
     with wave.open(output_wav, "wb") as wav_out:
         wav_out.setparams(params)
         wav_out.writeframes(new_frames)
 
     return output_wav
 
-# --- FFmpeg Utilities ---
-# Note: FFmpeg must be installed and accessible in the PATH for these to work.
+# --- FFmpeg Utilities (UNCHANGED) ---
 
 def extract_audio_ffmpeg(video_path, output_wav_path):
     """Extracts audio from video to a temporary WAV file."""
-    # -y: overwrite output file without asking; -vn: no video; -acodec pcm_s16le: raw, uncompressed WAV
     subprocess.run([
         "ffmpeg", "-y", "-i", video_path,
         "-vn", "-acodec", "pcm_s16le",
@@ -56,10 +106,6 @@ def extract_audio_ffmpeg(video_path, output_wav_path):
 
 def insert_audio_ffmpeg(video_path, audio_path, output_video_path):
     """Re-inserts the watermarked audio into the original video."""
-    # -c:v copy: copy video stream without re-encoding
-    # -map 0:v:0: take video stream from first input (0)
-    # -map 1:a:0: take audio stream from second input (1)
-    # -shortest: finish encoding when the shortest input stream ends
     subprocess.run([
         "ffmpeg", "-y",
         "-i", video_path,
@@ -71,17 +117,14 @@ def insert_audio_ffmpeg(video_path, audio_path, output_video_path):
         output_video_path
     ], check=True, capture_output=True)
 
-# --- Core Processing Logic ---
+# --- Core Processing Logic (MODIFIED to call DSSS) ---
 
-# Use Streamlit's cache to prevent re-processing the same file unnecessarily
-# The hash will be based on the video file content and the user_id (watermark)
 @st.cache_data
 def process_video_to_bytes(video_path, user_id):
     """
     Processes the video and returns the processed video content as bytes.
-    This fixes the issue where the temporary file was deleted before download.
     """
-    st.info(f"Processing video for user ID: {user_id}...")
+    st.info(f"Processing video for user ID: {user_id} using DSSS...")
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_audio_wav = os.path.join(temp_dir, "temp_audio.wav")
         watermarked_audio_wav = os.path.join(temp_dir, "watermarked_audio.wav")
@@ -92,17 +135,17 @@ def process_video_to_bytes(video_path, user_id):
             # 1. Extract audio
             extract_audio_ffmpeg(video_path, temp_audio_wav)
 
-            # 2. Embed watermark into WAV
-            embed_watermark(temp_audio_wav, str(user_id), watermarked_audio_wav)
+            # 2. Embed watermark into WAV using DSSS (CHANGED HERE)
+            embed_watermark_dsss(temp_audio_wav, str(user_id), watermarked_audio_wav)
 
-            # 3. Convert watermarked WAV to MP3 (FFmpeg might handle MP3 better)
+            # 3. Convert watermarked WAV to MP3 
             sound = AudioSegment.from_wav(watermarked_audio_wav)
             sound.export(watermarked_audio_mp3, format="mp3")
 
             # 4. Re-insert audio into video
             insert_audio_ffmpeg(video_path, watermarked_audio_mp3, processed_video_path)
 
-            # 5. Read the final video into memory (bytes) before the temp directory is wiped
+            # 5. Read the final video into memory
             with open(processed_video_path, "rb") as f:
                 video_bytes = f.read()
             
@@ -116,10 +159,10 @@ def process_video_to_bytes(video_path, user_id):
             st.error(f"An error occurred during processing: {e}")
             return None
 
-# --- Streamlit App ---
+# --- Streamlit App (UNCHANGED) ---
 
 def main():
-    st.title("Simple OTT Video App with Audio Watermarking")
+    st.title("Simple OTT Video App with DSSS Audio Watermarking")
 
     # Initialize Session State
     if 'users' not in st.session_state:
@@ -167,14 +210,11 @@ def main():
     st.header("⬆️ Upload Video (Admin Mockup)")
     uploaded_file = st.file_uploader("Choose a video file", type=list(ALLOWED_EXTENSIONS))
     
-    # Store the filename in session state for easier listing/cleanup
     if uploaded_file:
         if st.button("Save Upload"):
-            # Logic to handle deleting old files (as in your original code)
             for f in os.listdir(UPLOAD_FOLDER):
                 os.remove(os.path.join(UPLOAD_FOLDER, f))
 
-            # Save new video
             filename = uploaded_file.name
             file_path = os.path.join(UPLOAD_FOLDER, filename)
             with open(file_path, "wb") as f:
@@ -191,25 +231,17 @@ def main():
         for video in videos:
             video_path = os.path.join(UPLOAD_FOLDER, video)
             
-            # Use columns for layout
             col1, col2 = st.columns([3, 1])
             with col1:
                 st.markdown(f"**{video}**")
 
             with col2:
-                # 💡 Crucial Fix: Use st.download_button directly with a function 
-                # that processes the data, or use session state if processing is slow 
-                # and you need to show status updates.
-                
-                # Use a unique key for each button
                 download_key = f"download_{video}_{user_id}"
 
                 if st.button(f"Process & Get '{video}'", key=f"process_btn_{video}"):
-                    # Run the processing function
                     video_bytes = process_video_to_bytes(video_path, user_id)
                     
                     if video_bytes:
-                        # Store the processed bytes in session state for the download button
                         st.session_state[download_key] = video_bytes
                         st.success(f"Processing complete. Ready for download: watermarked_{video}")
                     else:
@@ -223,9 +255,6 @@ def main():
                         mime="video/mp4",
                         key=f"final_download_{video}"
                     )
-                    # Optional: Clean up the session state after the download button appears
-                    # You might need to manage this carefully depending on expected user flow.
-                    # del st.session_state[download_key] 
     else:
         st.info("No videos uploaded yet.")
 
