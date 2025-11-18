@@ -6,26 +6,20 @@ from pydub import AudioSegment
 import tempfile
 import subprocess
 
-# -----------------------
 # Configuration
-# -----------------------
 UPLOAD_FOLDER = 'uploads/'
 ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov'}
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# -----------------------
-# Watermarking function (WAV)
-# -----------------------
+# Watermarking function (unchanged, operates on WAV)
 def embed_watermark(input_wav, watermark_text, output_wav):
     with wave.open(input_wav, "rb") as wav:
         params = wav.getparams()
         frames = wav.readframes(params.nframes)
 
     samples = list(struct.unpack("<" + "h" * (len(frames) // 2), frames))
-
     watermark_bits = ''.join(format(ord(c), '08b') for c in watermark_text)
     length_bits = format(len(watermark_bits), '016b')  # 16 bits for length
-
     final_bits = length_bits + watermark_bits
 
     for i, bit in enumerate(final_bits):
@@ -33,29 +27,25 @@ def embed_watermark(input_wav, watermark_text, output_wav):
             samples[i] = (samples[i] & ~1) | int(bit)
 
     new_frames = struct.pack("<" + "h" * len(samples), *samples)
-
     with wave.open(output_wav, "wb") as wav_out:
         wav_out.setparams(params)
         wav_out.writeframes(new_frames)
 
     return output_wav
 
-# -----------------------
-# FFmpeg functions
-# -----------------------
+# Extract audio using FFmpeg
 def extract_audio_ffmpeg(video_path, output_wav_path):
-    ffmpeg_path = "/usr/bin/ffmpeg"  # Streamlit Cloud path
     subprocess.run([
-        ffmpeg_path, "-y", "-i", video_path,
+        "ffmpeg", "-y", "-i", video_path,
         "-vn",  # no video
         "-acodec", "pcm_s16le",
         output_wav_path
     ], check=True)
 
+# Re-insert audio using FFmpeg
 def insert_audio_ffmpeg(video_path, audio_path, output_video_path):
-    ffmpeg_path = "/usr/bin/ffmpeg"  # Streamlit Cloud path
     subprocess.run([
-        ffmpeg_path, "-y",
+        "ffmpeg", "-y",
         "-i", video_path,
         "-i", audio_path,
         "-c:v", "copy",
@@ -65,56 +55,45 @@ def insert_audio_ffmpeg(video_path, audio_path, output_video_path):
         output_video_path
     ], check=True)
 
-# -----------------------
-# Video processing
-# -----------------------
+# Process video: extract audio, watermark, re-insert
 def process_video_for_download(video_path, user_id):
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Extract audio as WAV
         temp_audio_wav = os.path.join(temp_dir, "temp_audio.wav")
         extract_audio_ffmpeg(video_path, temp_audio_wav)
 
-        # Watermark WAV
         watermarked_audio_wav = os.path.join(temp_dir, "watermarked_audio.wav")
         embed_watermark(temp_audio_wav, str(user_id), watermarked_audio_wav)
 
-        # Convert to MP3 for compatibility
         watermarked_audio_mp3 = os.path.join(temp_dir, "watermarked_audio.mp3")
         sound = AudioSegment.from_wav(watermarked_audio_wav)
         sound.export(watermarked_audio_mp3, format="mp3")
 
-        # Re-insert watermarked audio
         processed_video_path = os.path.join(temp_dir, "processed_video.mp4")
         insert_audio_ffmpeg(video_path, watermarked_audio_mp3, processed_video_path)
 
         return processed_video_path
 
-# -----------------------
 # Streamlit App
-# -----------------------
 def main():
     st.title("Simple OTT Video App")
 
-    # Session state
     if 'users' not in st.session_state:
         st.session_state.users = {}
     if 'logged_in_user' not in st.session_state:
         st.session_state.logged_in_user = None
 
-    # Sidebar for authentication
+    # Sidebar for login/registration
     with st.sidebar:
         st.header("Authentication")
-
         if st.session_state.logged_in_user:
             st.write(f"Logged in as: {st.session_state.logged_in_user}")
             if st.button("Logout"):
                 st.session_state.logged_in_user = None
-                st.experimental_rerun()
+                st.rerun()
         else:
             auth_mode = st.radio("Choose:", ["Login", "Register"])
             username = st.text_input("Username")
             password = st.text_input("Password", type="password")
-            
             if st.button("Submit"):
                 if auth_mode == "Register":
                     if username in st.session_state.users:
@@ -127,7 +106,7 @@ def main():
                     if username in st.session_state.users and st.session_state.users[username]['password'] == password:
                         st.session_state.logged_in_user = username
                         st.success("Logged in!")
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.error("Invalid credentials")
 
@@ -137,20 +116,24 @@ def main():
 
     user_id = st.session_state.users[st.session_state.logged_in_user]['id']
 
-    # Upload Section
+    # --- Upload Section (Option 1: delete old videos) ---
     st.header("Upload Video")
     uploaded_file = st.file_uploader("Choose a video file", type=list(ALLOWED_EXTENSIONS))
     if uploaded_file and st.button("Upload"):
+        # Delete all old videos
+        for f in os.listdir(UPLOAD_FOLDER):
+            os.remove(os.path.join(UPLOAD_FOLDER, f))
+
+        # Save new video
         filename = uploaded_file.name
         file_path = os.path.join(UPLOAD_FOLDER, filename)
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         st.success(f"Uploaded {filename}")
 
-    # List & Download Videos
+    # List and Download Videos
     st.header("Available Videos")
     videos = [f for f in os.listdir(UPLOAD_FOLDER) if f.split('.')[-1].lower() in ALLOWED_EXTENSIONS]
-    
     if videos:
         for video in videos:
             col1, col2 = st.columns([3, 1])
@@ -159,7 +142,7 @@ def main():
             with col2:
                 if st.button(f"Download {video}", key=video):
                     video_path = os.path.join(UPLOAD_FOLDER, video)
-                    with st.spinner("Processing video..."):
+                    with st.spinner("Processing video (extracting, watermarking WAV, re-inserting audio)..."):
                         processed_path = process_video_for_download(video_path, user_id)
                     with open(processed_path, "rb") as f:
                         st.download_button(
@@ -172,8 +155,7 @@ def main():
     else:
         st.write("No videos uploaded yet.")
 
-# -----------------------
-# Run app
-# -----------------------
 if __name__ == "__main__":
     main()
+
+
