@@ -19,7 +19,7 @@ def embed_watermark(input_wav, watermark_text, output_wav):
 
     samples = list(struct.unpack("<" + "h" * (len(frames) // 2), frames))
     watermark_bits = ''.join(format(ord(c), '08b') for c in watermark_text)
-    length_bits = format(len(watermark_bits), '016b')  # 16 bits for length
+    length_bits = format(len(watermark_bits), '016b')
     final_bits = length_bits + watermark_bits
 
     for i, bit in enumerate(final_bits):
@@ -37,8 +37,7 @@ def embed_watermark(input_wav, watermark_text, output_wav):
 def extract_audio_ffmpeg(video_path, output_wav_path):
     subprocess.run([
         "ffmpeg", "-y", "-i", video_path,
-        "-vn",  # no video
-        "-acodec", "pcm_s16le",
+        "-vn", "-acodec", "pcm_s16le",
         output_wav_path
     ], check=True)
 
@@ -89,7 +88,7 @@ def main():
             st.write(f"Logged in as: {st.session_state.logged_in_user}")
             if st.button("Logout"):
                 st.session_state.logged_in_user = None
-                st.rerun()
+                # Removed st.rerun()
         else:
             auth_mode = st.radio("Choose:", ["Login", "Register"])
             username = st.text_input("Username")
@@ -106,7 +105,7 @@ def main():
                     if username in st.session_state.users and st.session_state.users[username]['password'] == password:
                         st.session_state.logged_in_user = username
                         st.success("Logged in!")
-                        st.rerun()
+                        # Removed st.rerun()
                     else:
                         st.error("Invalid credentials")
 
@@ -157,5 +156,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 
 
